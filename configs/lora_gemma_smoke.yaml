@@ -1,0 +1,45 @@
+# Smoke-test config: runs the full pipeline in minutes on a single small GPU
+# (or CPU with painful patience) to catch template/tokenizer/dtype bugs before
+# burning slurm time on the 27B model.
+#
+# Use: python scripts/train_lora.py --config configs/lora_gemma_smoke.yaml
+# Or end-to-end: bash smoke.sh
+
+seed: 42
+
+model:
+  # Felipe: "4B has good reasoning" — E2B is too weak to produce BOHDI-useful
+  # traces. E4B is the floor for meaningful signal. Swap back to E2B only if
+  # VRAM is tight on your box.
+  name: google/gemma-3n-E4B-it
+  torch_dtype: bfloat16
+  quantization: null
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+  task_type: CAUSAL_LM
+
+training:
+  num_epochs: 1
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 1
+  learning_rate: 2.0e-4
+  warmup_ratio: 0.0
+  lr_scheduler_type: constant
+  max_seq_length: 1024
+  logging_steps: 1
+  save_strategy: epoch
+  eval_strategy: epoch
+  bf16: true
+
+data:
+  train_file: data/sft/smoke/train.jsonl
+  val_file: data/sft/smoke/val.jsonl
+  eval_sample_ids: data/raw/hard_200_sample_ids.json

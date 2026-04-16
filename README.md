@@ -14,6 +14,15 @@ LLM overconfidence is reinforced through RLHF on benchmarks that reward confiden
 
 HealthBench Hard (1000 examples) + HealthBench Full (5000 examples) combined = 5000 unique prompts, with 200 held out for evaluation. That gives 4800 prompts for training data generation. These are run through the BOHDI wrapper, graded using the HealthBench rubric grader, and filtered by score — yielding ~2500-3000 high-quality training pairs.
 
+## Quickstart
+
+1. `bash setup.sh` — one-time install and data download
+2. `export HF_TOKEN=hf_...` — gated model access
+3. `bash smoke.sh` — end-to-end test with `gemma-3n-E4B-it` (<10 min, catches bugs)
+4. `bash run_all.sh` — full pipeline on slurm
+
+See [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for step-by-step instructions, expected outputs, and troubleshooting.
+
 ## Pipeline
 
 ```bash
@@ -59,17 +68,24 @@ Four configurations are compared on the 200-sample HealthBench Hard holdout. Bri
 
 The key result is row 3: does the fine-tuned model exhibit epistemic humility without the prompt wrapper?
 
+### U-shape stratified analysis
+
+Per-tier failure rates stratified by rubric complexity (easy/medium/hard) and by theme (`emergency_referrals`, `hedging`, `context_seeking`, ...). Inspired by the Nature Medicine 2026 triage paper ([s41591-026-04297-7](https://www.nature.com/articles/s41591-026-04297-7)) which showed LLM failures concentrate at clinical extremes. The BOHDI hypothesis is that LoRA flattens this U by lifting the tails. Produced post-hoc by `scripts/eval_ushape.py`; output at `eval/ushape.json`.
+
 ## Repository Structure
 
 ```
 bohdi-lora/
-├── configs/          # Training hyperparameters
+├── configs/          # Training hyperparameters (full + smoke)
 ├── data/
 │   ├── raw/          # HealthBench eval IDs
 │   └── sft/          # Generated and filtered training data
 ├── eval/             # Evaluation outputs
 ├── scripts/          # Generation, filtering, training, and eval scripts
 ├── slurm/            # SBATCH job scripts
+├── smoke.sh          # End-to-end smoke test (gemma-2-2b-it)
+├── run_all.sh        # Full pipeline dependency chain (slurm)
+├── REPRODUCIBILITY.md
 └── requirements.txt
 ```
 
