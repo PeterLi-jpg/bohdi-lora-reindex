@@ -2,9 +2,9 @@
 
 import argparse
 import json
+import math
 import urllib.request
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +15,7 @@ from peft import PeftModel
 
 # make sure we can import from scripts/
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.filter_traces import GRADER_TEMPLATE, LocalGrader, parse_json_response
+from scripts.filter_traces import GRADER_TEMPLATE, LocalGrader, parse_json_response, grade_trace
 
 HEALTHBENCH_HARD_URL = "https://openaipublic.blob.core.windows.net/simple-evals/healthbench/hard_2025-05-08-21-00-10.jsonl"
 DATA_DIR = Path("data/raw")
@@ -87,66 +87,26 @@ def gen_response(model, tokenizer, messages, use_bodhi, bodhi_wrapper=None, max_
     return resp.content
 
 
-def grade_example(grader, prompt_messages, response_text, rubric_items):
-    convo = prompt_messages + [{"role": "assistant", "content": response_text}]
-    convo_str = "\n\n".join(f"{m['role']}: {m['content']}" for m in convo)
-
-    results = []
-    for rubric in rubric_items:
-        crit = f"[{rubric['points']}] {rubric['criterion']}"
-        prompt = GRADER_TEMPLATE.replace("<<conversation>>", convo_str).replace("<<rubric_item>>", crit)
-
-        parsed = {}
-        for _ in range(3):
-            raw = grader.grade(prompt)
-            parsed = parse_json_response(raw)
-            if "criteria_met" in parsed and isinstance(parsed["criteria_met"], bool):
-                break
-        else:
-            parsed = {"criteria_met": False, "explanation": "parse failed"}
-
-        results.append({
-            "criterion": rubric["criterion"], "points": rubric["points"],
-            "tags": rubric.get("tags", []), "criteria_met": parsed["criteria_met"],
-        })
-
-    total_pos = sum(r["points"] for r in results if r["points"] > 0)
-    earned = sum(r["points"] for r in results if r["criteria_met"])
-    score = earned / total_pos if total_pos > 0 else 0.0
-
-    tag_items = defaultdict(list)
-    for r in results:
-        for t in r.get("tags", []):
-            tag_items[t].append(r)
-    tag_scores = {}
-    for t, items in tag_items.items():
-        pos = sum(r["points"] for r in items if r["points"] > 0)
-        if pos > 0:
-            tag_scores[t] = sum(r["points"] for r in items if r["criteria_met"]) / pos
-
-    return {"overall_score": score, "tag_scores": tag_scores, "criteria_results": results}
-
-
 # -- calibration metrics --
 
 def compute_brier_score(results):
     """Brier score across all individual rubric criteria.
 
     Each criterion is a binary prediction: the model either meets it or not.
-    We treat the overall example score as the model's "confidence" and each
-    criterion outcome as the ground truth.  Lower is better.
+    We treat the overall example score (clamped to [0, 1]) as the model's
+    "confidence" and each criterion outcome as the ground truth.  Lower is better.
     """
     y_true = []
     y_pred = []
     for r in results:
-        example_score = r["score"]
+        conf = max(0.0, min(1.0, r["score"]))
         for crit in r["criteria_results"]:
             # positive-point criteria only (negative ones are penalties, not predictions)
             if crit["points"] > 0:
                 y_true.append(1.0 if crit["criteria_met"] else 0.0)
-                y_pred.append(example_score)
+                y_pred.append(conf)
     if not y_true:
-        return float("nan")
+        return None
     y_true = np.array(y_true)
     y_pred = np.array(y_pred)
     return float(np.mean((y_pred - y_true) ** 2))
@@ -155,19 +115,19 @@ def compute_brier_score(results):
 def compute_ece(results, n_bins=10):
     """Expected Calibration Error with equal-width bins.
 
-    Same setup as Brier: example score is the predicted confidence,
-    individual criterion outcomes are the labels.
+    Same setup as Brier: example score (clamped to [0, 1]) is the predicted
+    confidence, individual criterion outcomes are the labels.
     """
     y_true = []
     y_pred = []
     for r in results:
-        example_score = r["score"]
+        conf = max(0.0, min(1.0, r["score"]))
         for crit in r["criteria_results"]:
             if crit["points"] > 0:
                 y_true.append(1.0 if crit["criteria_met"] else 0.0)
-                y_pred.append(example_score)
+                y_pred.append(conf)
     if not y_true:
-        return float("nan")
+        return None
 
     y_true = np.array(y_true)
     y_pred = np.array(y_pred)
@@ -214,7 +174,7 @@ def main():
     scores = []
     for ex in tqdm(examples, desc=tag):
         resp = gen_response(model, tokenizer, ex["prompt"], args.use_bodhi, bodhi_wrapper)
-        grade = grade_example(grader, ex["prompt"], resp, ex["rubrics"])
+        grade = grade_trace(grader, ex["prompt"], resp, ex["rubrics"])
         all_results.append({
             "prompt_id": ex["prompt_id"], "response": resp,
             "score": grade["overall_score"], "tag_scores": grade["tag_scores"],
@@ -229,8 +189,9 @@ def main():
         "config": tag, "model": args.model,
         "lora_path": args.lora_path, "use_bodhi": args.use_bodhi,
         "n_examples": len(examples),
-        "mean": float(np.mean(scores)), "std": float(np.std(scores)),
-        "median": float(np.median(scores)),
+        "mean": float(np.mean(scores)) if scores else None,
+        "std": float(np.std(scores)) if scores else None,
+        "median": float(np.median(scores)) if scores else None,
         "brier": brier, "ece": ece,
         "results": all_results,
     }
@@ -240,8 +201,11 @@ def main():
     with open(out, "w") as f:
         json.dump(summary, f, indent=2)
 
-    print(f"\n{tag}: score={summary['mean']:.4f} +/- {summary['std']:.4f}  "
-          f"brier={brier:.4f}  ece={ece:.4f}  -> {out}")
+    brier_str = f"{brier:.4f}" if brier is not None else "n/a"
+    ece_str = f"{ece:.4f}" if ece is not None else "n/a"
+    mean_str = f"{summary['mean']:.4f}" if summary['mean'] is not None else "n/a"
+    std_str = f"{summary['std']:.4f}" if summary['std'] is not None else "n/a"
+    print(f"\n{tag}: score={mean_str} +/- {std_str}  brier={brier_str}  ece={ece_str}  -> {out}")
 
 
 if __name__ == "__main__":
