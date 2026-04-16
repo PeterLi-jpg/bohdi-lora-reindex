@@ -48,7 +48,7 @@ Slurm scripts for cluster execution are in `slurm/`. Update the `cd` path and su
 
 ## Evaluation
 
-Four configurations are compared on the 200-sample HealthBench Hard holdout:
+Four configurations are compared on the 200-sample HealthBench Hard holdout. Brier score and ECE (expected calibration error) measure how well the model's confidence tracks actual correctness — lower is better for both.
 
 | Configuration | HB-Hard Score | Brier | ECE |
 |---|---|---|---|

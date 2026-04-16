@@ -68,6 +68,8 @@ class LocalGrader:
     def __init__(self, model_name, device="auto"):
         print(f"Loading grader: {model_name}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.float16, device_map=device,
         )

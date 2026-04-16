@@ -24,7 +24,7 @@ training:
   learning_rate: 1.0e-4
   warmup_ratio: 0.05
   lr_scheduler_type: cosine
-  max_seq_length: 2048
+  max_seq_length: 4096
   logging_steps: 10
   save_strategy: epoch
   eval_strategy: epoch

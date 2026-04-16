@@ -6,8 +6,8 @@ import yaml
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
 from peft import LoraConfig
-from trl import SFTTrainer, SFTConfig
 
 DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
 
@@ -21,6 +21,30 @@ def format_example(batch):
         msgs.append({"role": "assistant", "content": resp})
         texts.append(_tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False))
     return texts
+
+
+def find_response_template(tokenizer):
+    """Figure out the token sequence that marks the start of an assistant turn.
+
+    We render a tiny dummy conversation through the chat template and grab
+    the text that appears right before the assistant's content.
+    """
+    dummy = [
+        {"role": "user", "content": "X"},
+        {"role": "assistant", "content": "Y"},
+    ]
+    rendered = tokenizer.apply_chat_template(dummy, tokenize=False, add_generation_prompt=False)
+    # find where the actual response content starts
+    marker_end = rendered.rfind("Y")
+    # walk backwards past whitespace to find the template boundary
+    prefix = rendered[:marker_end]
+    # grab the last line / tag before the response — that's our template
+    for candidate_len in (30, 20, 10):
+        candidate = prefix[-candidate_len:].lstrip()
+        if candidate:
+            return candidate
+    # fallback: use a reasonably safe suffix
+    return prefix[-15:]
 
 
 def main():
@@ -59,6 +83,14 @@ def main():
     ds = load_dataset("json", data_files={"train": data_cfg["train_file"], "validation": data_cfg["val_file"]})
     print(f"Train: {len(ds['train'])}  Val: {len(ds['validation'])}")
 
+    # only compute loss on the assistant response, not on the prompt tokens
+    response_template = find_response_template(_tokenizer)
+    print(f"Response template for masking: {response_template!r}")
+    collator = DataCollatorForCompletionOnlyLM(
+        response_template=response_template,
+        tokenizer=_tokenizer,
+    )
+
     training_args = SFTConfig(
         output_dir="checkpoints",
         num_train_epochs=train_cfg["num_epochs"],
@@ -74,17 +106,18 @@ def main():
         report_to="none",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
-        max_seq_length=train_cfg.get("max_seq_length", 2048),
+        save_total_limit=3,
+        max_seq_length=train_cfg.get("max_seq_length", 4096),
     )
 
-    # let SFTTrainer handle peft wrapping
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         peft_config=lora_config,
         train_dataset=ds["train"],
         eval_dataset=ds["validation"],
-        tokenizer=_tokenizer,
+        processing_class=_tokenizer,
+        data_collator=collator,
         formatting_func=format_example,
     )
 

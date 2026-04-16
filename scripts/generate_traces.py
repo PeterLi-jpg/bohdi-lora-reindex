@@ -81,14 +81,17 @@ class LocalModel:
         return self.tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
 
 
-def generate_response(model, messages, use_bodhi):
-    if not use_bodhi:
-        return model.generate(messages)
-
+def make_bodhi_wrapper(model):
+    """Set up BODHI wrapper once, reuse across examples."""
     from bodhi import BODHI, BODHIConfig
     chat_fn = lambda msgs: model.generate(msgs)
-    bodhi = BODHI(chat_function=chat_fn, config=BODHIConfig(domain="medical"))
-    resp = bodhi.complete(messages)
+    return BODHI(chat_function=chat_fn, config=BODHIConfig(domain="medical"))
+
+
+def generate_response(model, messages, use_bodhi, bodhi_wrapper=None):
+    if not use_bodhi:
+        return model.generate(messages)
+    resp = bodhi_wrapper.complete(messages)
     return resp.content
 
 
@@ -129,6 +132,8 @@ def main():
     print(f"\nGenerating {len(examples)} traces, bodhi={args.use_bodhi}\n")
     model = LocalModel(args.model)
 
+    bodhi_wrapper = make_bodhi_wrapper(model) if args.use_bodhi else None
+
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     mode = "a" if done_ids else "w"
@@ -137,7 +142,7 @@ def main():
     with open(out_path, mode) as f:
         for ex in tqdm(examples):
             try:
-                resp = generate_response(model, ex["prompt"], args.use_bodhi)
+                resp = generate_response(model, ex["prompt"], args.use_bodhi, bodhi_wrapper)
                 trace = {
                     "prompt_id": ex["prompt_id"],
                     "messages": ex["prompt"],

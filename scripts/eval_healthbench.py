@@ -61,15 +61,10 @@ def load_model(model_name, lora_path=None):
     return model, tokenizer
 
 
-def gen_response(model, tokenizer, messages, use_bodhi, max_new_tokens=1024):
-    if not use_bodhi:
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
-        return tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-
+def make_bodhi_wrapper(model, tokenizer, max_new_tokens=1024):
+    """Build a reusable BODHI wrapper around the given model."""
     from bodhi import BODHI, BODHIConfig
+
     def chat_fn(msgs):
         text = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -77,8 +72,18 @@ def gen_response(model, tokenizer, messages, use_bodhi, max_new_tokens=1024):
             out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
         return tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
 
-    bodhi = BODHI(chat_function=chat_fn, config=BODHIConfig(domain="medical"))
-    resp = bodhi.complete(messages)
+    return BODHI(chat_function=chat_fn, config=BODHIConfig(domain="medical"))
+
+
+def gen_response(model, tokenizer, messages, use_bodhi, bodhi_wrapper=None, max_new_tokens=1024):
+    if not use_bodhi:
+        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        return tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+
+    resp = bodhi_wrapper.complete(messages)
     return resp.content
 
 
@@ -122,6 +127,66 @@ def grade_example(grader, prompt_messages, response_text, rubric_items):
     return {"overall_score": score, "tag_scores": tag_scores, "criteria_results": results}
 
 
+# -- calibration metrics --
+
+def compute_brier_score(results):
+    """Brier score across all individual rubric criteria.
+
+    Each criterion is a binary prediction: the model either meets it or not.
+    We treat the overall example score as the model's "confidence" and each
+    criterion outcome as the ground truth.  Lower is better.
+    """
+    y_true = []
+    y_pred = []
+    for r in results:
+        example_score = r["score"]
+        for crit in r["criteria_results"]:
+            # positive-point criteria only (negative ones are penalties, not predictions)
+            if crit["points"] > 0:
+                y_true.append(1.0 if crit["criteria_met"] else 0.0)
+                y_pred.append(example_score)
+    if not y_true:
+        return float("nan")
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    return float(np.mean((y_pred - y_true) ** 2))
+
+
+def compute_ece(results, n_bins=10):
+    """Expected Calibration Error with equal-width bins.
+
+    Same setup as Brier: example score is the predicted confidence,
+    individual criterion outcomes are the labels.
+    """
+    y_true = []
+    y_pred = []
+    for r in results:
+        example_score = r["score"]
+        for crit in r["criteria_results"]:
+            if crit["points"] > 0:
+                y_true.append(1.0 if crit["criteria_met"] else 0.0)
+                y_pred.append(example_score)
+    if not y_true:
+        return float("nan")
+
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+        mask = (y_pred > lo) & (y_pred <= hi)
+        if lo == 0.0:
+            mask = mask | (y_pred == 0.0)
+        n = mask.sum()
+        if n == 0:
+            continue
+        avg_conf = y_pred[mask].mean()
+        avg_acc = y_true[mask].mean()
+        ece += (n / len(y_true)) * abs(avg_acc - avg_conf)
+    return float(ece)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="google/medgemma-27b-text-it")
@@ -140,13 +205,15 @@ def main():
     model, tokenizer = load_model(args.model, args.lora_path)
     grader = LocalGrader(args.grader_model)
 
+    bodhi_wrapper = make_bodhi_wrapper(model, tokenizer) if args.use_bodhi else None
+
     tag = f"{'lora' if args.lora_path else 'base'}_{'bodhi' if args.use_bodhi else 'no_wrapper'}"
     print(f"\nEval: {tag}  ({len(examples)} examples)\n")
 
     all_results = []
     scores = []
     for ex in tqdm(examples, desc=tag):
-        resp = gen_response(model, tokenizer, ex["prompt"], args.use_bodhi)
+        resp = gen_response(model, tokenizer, ex["prompt"], args.use_bodhi, bodhi_wrapper)
         grade = grade_example(grader, ex["prompt"], resp, ex["rubrics"])
         all_results.append({
             "prompt_id": ex["prompt_id"], "response": resp,
@@ -155,12 +222,16 @@ def main():
         })
         scores.append(grade["overall_score"])
 
+    brier = compute_brier_score(all_results)
+    ece = compute_ece(all_results)
+
     summary = {
         "config": tag, "model": args.model,
         "lora_path": args.lora_path, "use_bodhi": args.use_bodhi,
         "n_examples": len(examples),
         "mean": float(np.mean(scores)), "std": float(np.std(scores)),
         "median": float(np.median(scores)),
+        "brier": brier, "ece": ece,
         "results": all_results,
     }
 
@@ -169,7 +240,8 @@ def main():
     with open(out, "w") as f:
         json.dump(summary, f, indent=2)
 
-    print(f"\n{tag}: {summary['mean']:.4f} +/- {summary['std']:.4f}  -> {out}")
+    print(f"\n{tag}: score={summary['mean']:.4f} +/- {summary['std']:.4f}  "
+          f"brier={brier:.4f}  ece={ece:.4f}  -> {out}")
 
 
 if __name__ == "__main__":
