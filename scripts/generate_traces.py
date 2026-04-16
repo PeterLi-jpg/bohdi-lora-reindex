@@ -94,7 +94,7 @@ def generate_response(model, messages, use_bodhi):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="nvidia/Llama-3.1-Nemotron-Nano-8B-v1")
+    parser.add_argument("--model", default="google/medgemma-27b-text-it")
     parser.add_argument("--datasets", nargs="+", default=["healthbench_hard", "healthbench"],
                         choices=list(DATASET_URLS.keys()))
     parser.add_argument("--exclude-ids", default=None)

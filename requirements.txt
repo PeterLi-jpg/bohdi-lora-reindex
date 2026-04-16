@@ -1,6 +1,6 @@
 bodhi-llm[all]
 torch>=2.1.0
-transformers>=4.40.0
+transformers>=4.50.0
 pyyaml>=6.0
 peft>=0.10.0
 trl>=0.9.0,<0.12.0

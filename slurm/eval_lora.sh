@@ -4,11 +4,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --time=04:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/eval_%j.out
 #SBATCH --error=logs/eval_%j.err
 #SBATCH --job-name=bohdi_eval
-#SBATCH --mem=100G
+#SBATCH --mem=250G
 
 module load miniforge/24.3.0-0
 conda activate bohdi  # change to your env name
@@ -20,7 +20,7 @@ nvidia-smi --list-gpus
 
 python scripts/download_data.py
 
-MODEL="nvidia/Llama-3.1-Nemotron-Nano-8B-v1"
+MODEL="google/medgemma-27b-text-it"
 IDS="data/raw/hard_200_sample_ids.json"
 LORA="checkpoints/best"
 

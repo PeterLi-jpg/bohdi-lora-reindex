@@ -124,7 +124,7 @@ def grade_example(grader, prompt_messages, response_text, rubric_items):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="nvidia/Llama-3.1-Nemotron-Nano-8B-v1")
+    parser.add_argument("--model", default="google/medgemma-27b-text-it")
     parser.add_argument("--lora-path", default=None)
     parser.add_argument("--use-bodhi", action="store_true")
     parser.add_argument("--sample-ids", required=True)

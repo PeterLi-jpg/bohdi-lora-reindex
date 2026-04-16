@@ -4,11 +4,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --time=04:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/train_%j.out
 #SBATCH --error=logs/train_%j.err
 #SBATCH --job-name=bohdi_train
-#SBATCH --mem=100G
+#SBATCH --mem=200G
 
 module load miniforge/24.3.0-0
 conda activate bohdi  # change to your env name
@@ -19,7 +19,7 @@ export WANDB_MODE=offline
 echo "$(date) | starting lora training on $(hostname)"
 nvidia-smi --list-gpus
 
-python scripts/train_lora.py --config configs/lora_nemotron8b.yaml
+python scripts/train_lora.py --config configs/lora_medgemma27b.yaml
 
 echo "$(date) | done"
 nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv

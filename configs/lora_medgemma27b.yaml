@@ -1,7 +1,7 @@
 model:
-  name: nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+  name: google/medgemma-27b-text-it
   torch_dtype: bfloat16
-  quantization: null  # "4bit" for QLoRA
+  quantization: null
 
 lora:
   r: 16
@@ -12,15 +12,16 @@ lora:
     - k_proj
     - v_proj
     - o_proj
+    - gate_proj
     - up_proj
     - down_proj
   task_type: CAUSAL_LM
 
 training:
   num_epochs: 3
-  per_device_train_batch_size: 4
-  gradient_accumulation_steps: 4
-  learning_rate: 2.0e-4
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-4
   warmup_ratio: 0.05
   lr_scheduler_type: cosine
   max_seq_length: 2048

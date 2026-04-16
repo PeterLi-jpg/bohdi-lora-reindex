@@ -8,7 +8,7 @@ LLM overconfidence is reinforced through RLHF on benchmarks that reward confiden
 
 ## Base Model
 
-[nvidia/Llama-3.1-Nemotron-Nano-8B-v1](https://huggingface.co/nvidia/Llama-3.1-Nemotron-Nano-8B-v1) — NVIDIA's RL-optimized 8B parameter model. Fits on a single H200 for training or locally with quantization.
+[google/medgemma-27b-text-it](https://huggingface.co/google/medgemma-27b-text-it) — Google's 27B medical Gemma model (text-only variant). Pre-trained on medical data, so the LoRA only needs to teach behavioral virtues rather than medical knowledge. Requires accepting Google's Health AI terms on HuggingFace.
 
 ## Training Data
 
@@ -22,7 +22,7 @@ bash setup.sh
 
 # 1. Generate BOHDI traces
 python scripts/generate_traces.py \
-    --model nvidia/Llama-3.1-Nemotron-Nano-8B-v1 \
+    --model google/medgemma-27b-text-it \
     --datasets healthbench_hard healthbench \
     --exclude-ids data/raw/hard_200_sample_ids.json \
     --output data/sft/raw_traces.jsonl --use-bodhi
@@ -34,11 +34,11 @@ python scripts/filter_traces.py \
     --output-dir data/sft/
 
 # 3. Train LoRA
-python scripts/train_lora.py --config configs/lora_nemotron8b.yaml
+python scripts/train_lora.py --config configs/lora_medgemma27b.yaml
 
 # 4. Evaluate
 python scripts/eval_healthbench.py \
-    --model nvidia/Llama-3.1-Nemotron-Nano-8B-v1 \
+    --model google/medgemma-27b-text-it \
     --lora-path checkpoints/best \
     --sample-ids data/raw/hard_200_sample_ids.json \
     --output eval/lora_no_wrapper.json
