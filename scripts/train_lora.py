@@ -1,12 +1,13 @@
 """LoRA SFT on filtered BOHDI traces."""
 
 import argparse
+import json
 import random
 
 import numpy as np
 import torch
 import yaml
-from datasets import load_dataset
+from datasets import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
 from peft import LoraConfig
@@ -14,6 +15,22 @@ from peft import LoraConfig
 DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
 
 _tokenizer = None
+
+
+def load_sft_jsonl(path):
+    """Load graded SFT JSONL, keeping only what SFTTrainer needs.
+
+    The graded files also include a ``grade`` field with per-example variable
+    rubric keys (tag_scores / criteria_results differ per prompt). HF datasets'
+    schema inference picks up the first file's keys and fails casting the second
+    when rubric keys differ. Stripping to the fields we actually use avoids that.
+    """
+    rows = []
+    with open(path) as f:
+        for line in f:
+            obj = json.loads(line)
+            rows.append({"messages": obj["messages"], "response": obj["response"]})
+    return Dataset.from_list(rows)
 
 
 def format_example(batch):
@@ -41,9 +58,15 @@ def find_response_template(tokenizer):
         if template.strip():
             return template
 
+    # Print full before/after templates so the fix — usually a small pattern
+    # extension in this function — is obvious instead of requiring a debug rerun.
     raise ValueError(
-        f"Could not auto-detect response template. "
-        f"Template suffix: {with_gen[-50:]!r}"
+        "Could not auto-detect response template. The tokenizer's chat template\n"
+        "does not append a clean assistant-turn header to add_generation_prompt=True.\n"
+        f"without_gen = {without_gen!r}\n"
+        f"with_gen    = {with_gen!r}\n"
+        f"diff suffix = {with_gen[-50:]!r}\n"
+        "Extend find_response_template() to handle this template family."
     )
 
 
@@ -87,7 +110,10 @@ def main():
         task_type=lora_cfg["task_type"],
     )
 
-    ds = load_dataset("json", data_files={"train": data_cfg["train_file"], "validation": data_cfg["val_file"]})
+    ds = {
+        "train": load_sft_jsonl(data_cfg["train_file"]),
+        "validation": load_sft_jsonl(data_cfg["val_file"]),
+    }
     print(f"Train: {len(ds['train'])}  Val: {len(ds['validation'])}")
 
     # only compute loss on the assistant response, not on the prompt tokens

@@ -1,9 +1,16 @@
 bodhi-llm[all]
 torch>=2.1.0,<3.0.0
 transformers>=4.50.0,<5.0.0
+# gemma-3n-* are multimodal and transformers initializes a vision tower even
+# when we only use the text path; timm + Pillow are required to load the model.
+timm>=1.0.0,<2.0.0
+pillow>=10.0,<12.0
 pyyaml>=6.0,<7.0
 peft>=0.10.0,<1.0.0
 trl>=0.9.0,<0.12.0
+# trl pulls rich via a runtime import but doesn't declare it in its setup deps
+# at the versions we pin; without this, trl.SFTTrainer import fails on a clean env.
+rich>=13.0,<15.0
 datasets>=2.18.0,<4.0.0
 accelerate>=0.28.0,<2.0.0
 autoawq>=0.2.0,<0.3.0; sys_platform == "linux"
