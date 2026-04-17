@@ -56,4 +56,7 @@ python scripts/eval_ushape.py \
     --healthbench data/raw/healthbench_hard.jsonl data/raw/healthbench.jsonl \
     --output eval/ushape.json
 
+echo "--- plot U-shape figures ---"
+python scripts/plot_ushape.py --input eval/ushape.json --out-dir eval/figures
+
 echo "$(date) | done"

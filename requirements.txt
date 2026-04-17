@@ -17,3 +17,4 @@ autoawq>=0.2.0,<0.3.0; sys_platform == "linux"
 numpy>=1.24,<3.0
 pandas>=2.0,<3.0
 tqdm>=4.65
+matplotlib>=3.7,<4.0

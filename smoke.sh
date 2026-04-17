@@ -77,6 +77,11 @@ python scripts/eval_ushape.py \
     --tertile-on-holdout-only \
     --output eval/smoke/ushape.json
 
+# Plots are thin with only 1 config + 3 samples, but we still run plot_ushape
+# as a wiring check so cluster-scale plotting isn't first-run on the cluster.
+echo "--- 4d/4: render U-shape figures ---"
+python scripts/plot_ushape.py --input eval/smoke/ushape.json --out-dir eval/smoke/figures
+
 echo
 echo "=== smoke test PASSED | $(date) ==="
 echo "artifacts:"
@@ -84,3 +89,4 @@ echo "  data/sft/smoke/{train,val}.jsonl"
 echo "  checkpoints/best/"
 echo "  eval/smoke/lora.json"
 echo "  eval/smoke/ushape.json"
+echo "  eval/smoke/figures/{u_curve,u_fail,theme_fail}.png"

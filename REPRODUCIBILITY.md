@@ -201,9 +201,16 @@ Structure:
 - `configs.<name>.by_tier` — per-tier (`easy`/`medium`/`hard`) stats: `n`, `mean`, `median`, `min`, `max`, `fail_rate` (fraction scoring below `--fail-threshold`, default 0.4)
 - `configs.<name>.by_theme` — same stats broken down by HealthBench theme, e.g. `emergency_referrals`, `hedging`, `context_seeking`
 
-The two figures the paper should produce from this file:
-1. Line plot: `easy | medium | hard` on x-axis, mean score on y-axis, one line per config — the "U" should be visible on `base_no_wrapper` and flatten on `lora_no_wrapper`.
-2. Grouped bar chart: themes on x-axis, fail rate on y-axis. `emergency_referrals` and `hedging` are the headline themes — BOHDI's humility claim is that failure rate drops sharply on those.
+The figures are rendered automatically by `scripts/plot_ushape.py`, which runs at the end of `slurm/eval_lora.sh` and `smoke.sh`. Output in `eval/figures/`:
+
+- `u_curve.png` — mean score across `easy | medium | hard`, one line per config. The "U" on `base_no_wrapper` should flatten on `lora_no_wrapper`.
+- `u_fail.png` — same x-axis, failure rate on y-axis. Classic inverted-U from the Nature Medicine paper; LoRA should flatten it.
+- `theme_fail.png` — grouped bar chart, themes on x-axis, fail rate per config. `emergency_referrals` and `hedging` are highlighted (BOHDI's humility claim lives there).
+
+To regenerate plots from an existing `eval/ushape.json` without rerunning eval:
+```bash
+python scripts/plot_ushape.py --input eval/ushape.json --out-dir eval/figures
+```
 
 ## 6. Reproducibility guarantees
 
