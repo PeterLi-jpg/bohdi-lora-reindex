@@ -1,21 +1,21 @@
-"""Evaluate model on HealthBench Hard (base vs lora, with/without BOHDI wrapper)."""
+"""Evaluate a model on HealthBench Hard with independent rubric graders."""
 
 import argparse
 import json
-import math
 import urllib.request
-import sys
 from pathlib import Path
 
 import numpy as np
 import torch
+from peft import PeftModel
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
 
-# make sure we can import from scripts/
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.filter_traces import GRADER_TEMPLATE, LocalGrader, parse_json_response, grade_trace
+from scripts.healthbench_grading import (
+    DEFAULT_EVAL_GRADER_MODEL,
+    LocalGrader,
+    grade_trace,
+)
 
 HEALTHBENCH_HARD_URL = "https://openaipublic.blob.core.windows.net/simple-evals/healthbench/hard_2025-05-08-21-00-10.jsonl"
 DATA_DIR = Path("data/raw")
@@ -29,12 +29,12 @@ def load_eval_data(sample_ids_path):
         urllib.request.urlretrieve(HEALTHBENCH_HARD_URL, path)
 
     examples = []
-    with open(path) as f:
-        for line in f:
+    with open(path) as handle:
+        for line in handle:
             examples.append(json.loads(line))
 
-    with open(sample_ids_path) as f:
-        data = json.load(f)
+    with open(sample_ids_path) as handle:
+        data = json.load(handle)
     if isinstance(data, dict):
         data = data["prompt_ids"]
     eval_ids = set(data)
@@ -62,11 +62,10 @@ def load_model(model_name, lora_path=None):
 
 
 def make_bodhi_wrapper(model, tokenizer, max_new_tokens=1024):
-    """Build a reusable BODHI wrapper around the given model."""
     from bodhi import BODHI, BODHIConfig
 
-    def chat_fn(msgs):
-        text = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+    def chat_fn(messages):
+        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         with torch.no_grad():
             out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
@@ -87,64 +86,24 @@ def gen_response(model, tokenizer, messages, use_bodhi, bodhi_wrapper=None, max_
     return resp.content
 
 
-# -- calibration metrics --
+def summarize_grader_run(graded_results):
+    normalized_scores = [item["normalized_score"] for item in graded_results]
+    positive_scores = [item["positive_score"] for item in graded_results]
+    legacy_scores = [item["legacy_score"] for item in graded_results]
+    total_parse_failures = sum(item["parse_failures"] for item in graded_results)
+    total_criteria = sum(item["total_criteria"] for item in graded_results)
+    parse_failure_rate = (total_parse_failures / total_criteria) if total_criteria else 0.0
 
-def compute_brier_score(results):
-    """Brier score across all individual rubric criteria.
-
-    Each criterion is a binary prediction: the model either meets it or not.
-    We treat the overall example score (clamped to [0, 1]) as the model's
-    "confidence" and each criterion outcome as the ground truth.  Lower is better.
-    """
-    y_true = []
-    y_pred = []
-    for r in results:
-        conf = max(0.0, min(1.0, r["score"]))
-        for crit in r["criteria_results"]:
-            # positive-point criteria only (negative ones are penalties, not predictions)
-            if crit["points"] > 0:
-                y_true.append(1.0 if crit["criteria_met"] else 0.0)
-                y_pred.append(conf)
-    if not y_true:
-        return None
-    y_true = np.array(y_true)
-    y_pred = np.array(y_pred)
-    return float(np.mean((y_pred - y_true) ** 2))
-
-
-def compute_ece(results, n_bins=10):
-    """Expected Calibration Error with equal-width bins.
-
-    Same setup as Brier: example score (clamped to [0, 1]) is the predicted
-    confidence, individual criterion outcomes are the labels.
-    """
-    y_true = []
-    y_pred = []
-    for r in results:
-        conf = max(0.0, min(1.0, r["score"]))
-        for crit in r["criteria_results"]:
-            if crit["points"] > 0:
-                y_true.append(1.0 if crit["criteria_met"] else 0.0)
-                y_pred.append(conf)
-    if not y_true:
-        return None
-
-    y_true = np.array(y_true)
-    y_pred = np.array(y_pred)
-
-    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
-    ece = 0.0
-    for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
-        mask = (y_pred > lo) & (y_pred <= hi)
-        if lo == 0.0:
-            mask = mask | (y_pred == 0.0)
-        n = mask.sum()
-        if n == 0:
-            continue
-        avg_conf = y_pred[mask].mean()
-        avg_acc = y_true[mask].mean()
-        ece += (n / len(y_true)) * abs(avg_acc - avg_conf)
-    return float(ece)
+    return {
+        "mean_normalized_score": float(np.mean(normalized_scores)) if normalized_scores else None,
+        "std_normalized_score": float(np.std(normalized_scores)) if normalized_scores else None,
+        "median_normalized_score": float(np.median(normalized_scores)) if normalized_scores else None,
+        "mean_positive_score": float(np.mean(positive_scores)) if positive_scores else None,
+        "mean_legacy_score": float(np.mean(legacy_scores)) if legacy_scores else None,
+        "total_parse_failures": total_parse_failures,
+        "total_criteria": total_criteria,
+        "parse_failure_rate": parse_failure_rate,
+    }
 
 
 def main():
@@ -153,9 +112,16 @@ def main():
     parser.add_argument("--lora-path", default=None)
     parser.add_argument("--use-bodhi", action="store_true")
     parser.add_argument("--sample-ids", required=True)
-    parser.add_argument("--grader-model", default="Qwen/Qwen2.5-14B-Instruct-AWQ")
+    parser.add_argument("--grader-model", default=DEFAULT_EVAL_GRADER_MODEL)
+    parser.add_argument("--secondary-grader-model", action="append", default=[])
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-examples", type=int, default=None)
+    parser.add_argument(
+        "--max-parse-failure-rate",
+        type=float,
+        default=0.05,
+        help="fail if any grader exceeds this parse failure rate",
+    )
     args = parser.parse_args()
 
     examples = load_eval_data(args.sample_ids)
@@ -163,49 +129,88 @@ def main():
         examples = examples[:args.max_examples]
 
     model, tokenizer = load_model(args.model, args.lora_path)
-    grader = LocalGrader(args.grader_model)
-
     bodhi_wrapper = make_bodhi_wrapper(model, tokenizer) if args.use_bodhi else None
 
     tag = f"{'lora' if args.lora_path else 'base'}_{'bodhi' if args.use_bodhi else 'no_wrapper'}"
     print(f"\nEval: {tag}  ({len(examples)} examples)\n")
 
-    all_results = []
-    scores = []
-    for ex in tqdm(examples, desc=tag):
-        resp = gen_response(model, tokenizer, ex["prompt"], args.use_bodhi, bodhi_wrapper)
-        grade = grade_trace(grader, ex["prompt"], resp, ex["rubrics"])
-        all_results.append({
-            "prompt_id": ex["prompt_id"], "response": resp,
-            "score": grade["overall_score"], "tag_scores": grade["tag_scores"],
-            "criteria_results": grade["criteria_results"],
+    responses = []
+    for ex in tqdm(examples, desc=f"{tag}: generate"):
+        responses.append({
+            "prompt_id": ex["prompt_id"],
+            "prompt": ex["prompt"],
+            "rubrics": ex["rubrics"],
+            "response": gen_response(model, tokenizer, ex["prompt"], args.use_bodhi, bodhi_wrapper),
         })
-        scores.append(grade["overall_score"])
 
-    brier = compute_brier_score(all_results)
-    ece = compute_ece(all_results)
+    grader_models = [args.grader_model] + list(args.secondary_grader_model)
+    grader_runs = []
+    for idx, grader_model in enumerate(grader_models):
+        grader = LocalGrader(grader_model)
+        graded_results = []
+        for item in tqdm(responses, desc=f"{tag}: grade[{idx + 1}/{len(grader_models)}]"):
+            grade = grade_trace(grader, item["prompt"], item["response"], item["rubrics"])
+            graded_results.append({
+                "prompt_id": item["prompt_id"],
+                "normalized_score": grade["normalized_score"],
+                "positive_score": grade["positive_score"],
+                "legacy_score": grade["legacy_score"],
+                "score_details": grade["score_details"],
+                "tag_scores": grade["tag_scores"],
+                "criteria_results": grade["criteria_results"],
+                "parse_failures": grade["parse_failures"],
+                "total_criteria": grade["total_criteria"],
+            })
 
-    summary = {
-        "config": tag, "model": args.model,
-        "lora_path": args.lora_path, "use_bodhi": args.use_bodhi,
-        "n_examples": len(examples),
-        "mean": float(np.mean(scores)) if scores else None,
-        "std": float(np.std(scores)) if scores else None,
-        "median": float(np.median(scores)) if scores else None,
-        "brier": brier, "ece": ece,
-        "results": all_results,
-    }
+        summary = summarize_grader_run(graded_results)
+        if summary["parse_failure_rate"] > args.max_parse_failure_rate:
+            raise RuntimeError(
+                f"grader {grader_model} exceeded parse failure threshold: "
+                f"{summary['parse_failure_rate']:.2%} > {args.max_parse_failure_rate:.2%}"
+            )
+
+        grader_runs.append({
+            "role": "primary" if idx == 0 else "secondary",
+            "grader_model": grader_model,
+            "summary": summary,
+            "results": graded_results,
+        })
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w") as f:
-        json.dump(summary, f, indent=2)
+    payload = {
+        "config": tag,
+        "model": args.model,
+        "lora_path": args.lora_path,
+        "use_bodhi": args.use_bodhi,
+        "n_examples": len(examples),
+        "score_metric": "normalized_rubric_score",
+        "evaluation_notes": [
+            "Normalized rubric score accounts for both positive credit and negative penalties.",
+            "Calibration metrics are intentionally omitted until the pipeline has a model-derived confidence signal.",
+            "HealthBench-family evaluation does not by itself establish broader transfer beyond this benchmark family.",
+        ],
+        "responses": [
+            {
+                "prompt_id": item["prompt_id"],
+                "response": item["response"],
+            }
+            for item in responses
+        ],
+        "grader_runs": grader_runs,
+    }
+    with open(out, "w") as handle:
+        json.dump(payload, handle, indent=2)
 
-    brier_str = f"{brier:.4f}" if brier is not None else "n/a"
-    ece_str = f"{ece:.4f}" if ece is not None else "n/a"
-    mean_str = f"{summary['mean']:.4f}" if summary['mean'] is not None else "n/a"
-    std_str = f"{summary['std']:.4f}" if summary['std'] is not None else "n/a"
-    print(f"\n{tag}: score={mean_str} +/- {std_str}  brier={brier_str}  ece={ece_str}  -> {out}")
+    for run in grader_runs:
+        summary = run["summary"]
+        print(
+            f"{tag} [{run['role']}] {run['grader_model']}: "
+            f"normalized={summary['mean_normalized_score']:.4f} +/- {summary['std_normalized_score']:.4f} "
+            f"positive={summary['mean_positive_score']:.4f} "
+            f"parse_failures={summary['total_parse_failures']}/{summary['total_criteria']}"
+        )
+    print(f"Saved -> {out}")
 
 
 if __name__ == "__main__":

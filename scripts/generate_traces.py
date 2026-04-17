@@ -60,6 +60,43 @@ def load_exclude_ids(path):
     return set(data)
 
 
+def validate_resume_file(path, model_name, use_bodhi, datasets):
+    done_ids = set()
+    allowed_datasets = set(datasets)
+    with open(path) as f:
+        for line_number, line in enumerate(f, start=1):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"resume file contains invalid JSON on line {line_number}: {path}"
+                ) from exc
+
+            prompt_id = record.get("prompt_id")
+            if not prompt_id:
+                raise ValueError(f"resume file is missing prompt_id on line {line_number}: {path}")
+
+            if record.get("model") != model_name:
+                raise ValueError(
+                    "resume file was generated with a different model: "
+                    f"{record.get('model')} != {model_name}"
+                )
+            if bool(record.get("bodhi")) != bool(use_bodhi):
+                raise ValueError(
+                    "resume file was generated with a different BOHDI setting: "
+                    f"{record.get('bodhi')} != {use_bodhi}"
+                )
+            source_dataset = record.get("source_dataset")
+            if source_dataset and source_dataset not in allowed_datasets:
+                raise ValueError(
+                    "resume file contains traces from an unexpected dataset: "
+                    f"{source_dataset} not in {sorted(allowed_datasets)}"
+                )
+            done_ids.add(prompt_id)
+
+    return done_ids
+
+
 class LocalModel:
     def __init__(self, model_name, device="auto"):
         print(f"Loading {model_name}...")
@@ -120,12 +157,12 @@ def main():
 
     done_ids = set()
     if args.resume_from and Path(args.resume_from).exists():
-        with open(args.resume_from) as f:
-            for line in f:
-                try:
-                    done_ids.add(json.loads(line)["prompt_id"])
-                except (json.JSONDecodeError, KeyError):
-                    pass  # skip corrupt lines from interrupted runs
+        done_ids = validate_resume_file(
+            args.resume_from,
+            model_name=args.model,
+            use_bodhi=args.use_bodhi,
+            datasets=args.datasets,
+        )
         examples = [ex for ex in examples if ex["prompt_id"] not in done_ids]
         print(f"Resuming, skipping {len(done_ids)} already done")
 

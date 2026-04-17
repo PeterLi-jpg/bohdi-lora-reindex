@@ -31,15 +31,39 @@ IDS="data/raw/hard_200_sample_ids.json"
 LORA="checkpoints/best"
 
 echo "--- base, no wrapper ---"
-python scripts/eval_healthbench.py --model $MODEL --sample-ids $IDS --output eval/base_no_wrapper.json
+python scripts/eval_healthbench.py \
+    --model $MODEL \
+    --sample-ids $IDS \
+    --grader-model mistralai/Mistral-7B-Instruct-v0.3 \
+    --secondary-grader-model Qwen/Qwen2.5-14B-Instruct-AWQ \
+    --output eval/base_no_wrapper.json
 
 echo "--- base + bodhi ---"
-python scripts/eval_healthbench.py --model $MODEL --use-bodhi --sample-ids $IDS --output eval/base_bodhi.json
+python scripts/eval_healthbench.py \
+    --model $MODEL \
+    --use-bodhi \
+    --sample-ids $IDS \
+    --grader-model mistralai/Mistral-7B-Instruct-v0.3 \
+    --secondary-grader-model Qwen/Qwen2.5-14B-Instruct-AWQ \
+    --output eval/base_bodhi.json
 
 echo "--- lora, no wrapper ---"
-python scripts/eval_healthbench.py --model $MODEL --lora-path $LORA --sample-ids $IDS --output eval/lora_no_wrapper.json
+python scripts/eval_healthbench.py \
+    --model $MODEL \
+    --lora-path $LORA \
+    --sample-ids $IDS \
+    --grader-model mistralai/Mistral-7B-Instruct-v0.3 \
+    --secondary-grader-model Qwen/Qwen2.5-14B-Instruct-AWQ \
+    --output eval/lora_no_wrapper.json
 
 echo "--- lora + bodhi ---"
-python scripts/eval_healthbench.py --model $MODEL --lora-path $LORA --use-bodhi --sample-ids $IDS --output eval/lora_bodhi.json
+python scripts/eval_healthbench.py \
+    --model $MODEL \
+    --lora-path $LORA \
+    --use-bodhi \
+    --sample-ids $IDS \
+    --grader-model mistralai/Mistral-7B-Instruct-v0.3 \
+    --secondary-grader-model Qwen/Qwen2.5-14B-Instruct-AWQ \
+    --output eval/lora_bodhi.json
 
 echo "$(date) | done"

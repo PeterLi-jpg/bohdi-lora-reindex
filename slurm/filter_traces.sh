@@ -33,6 +33,7 @@ python scripts/filter_traces.py \
     --output-dir data/sft/ \
     --min-score 0.4 \
     --val-ratio 0.1 \
+    --max-parse-failure-rate 0.05 \
     --graded-output data/sft/all_graded.jsonl
 
 echo "$(date) | done"

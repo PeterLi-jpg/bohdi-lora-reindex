@@ -14,13 +14,21 @@ DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": to
 _tokenizer = None
 
 
-def format_example(batch):
-    texts = []
-    for msgs, resp in zip(batch["messages"], batch["response"]):
-        msgs = list(msgs)
-        msgs.append({"role": "assistant", "content": resp})
-        texts.append(_tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False))
-    return texts
+def format_example(messages, response):
+    conversation = list(messages)
+    conversation.append({"role": "assistant", "content": response})
+    return _tokenizer.apply_chat_template(
+        conversation, tokenize=False, add_generation_prompt=False
+    )
+
+
+def add_text_column(batch):
+    return {
+        "text": [
+            format_example(messages, response)
+            for messages, response in zip(batch["messages"], batch["response"])
+        ]
+    }
 
 
 def find_response_template(tokenizer):
@@ -79,6 +87,7 @@ def main():
     )
 
     ds = load_dataset("json", data_files={"train": data_cfg["train_file"], "validation": data_cfg["val_file"]})
+    ds = ds.map(add_text_column, batched=True, desc="Formatting chat transcripts")
     print(f"Train: {len(ds['train'])}  Val: {len(ds['validation'])}")
 
     # only compute loss on the assistant response, not on the prompt tokens
@@ -117,7 +126,7 @@ def main():
         eval_dataset=ds["validation"],
         tokenizer=_tokenizer,
         data_collator=collator,
-        formatting_func=format_example,
+        dataset_text_field="text",
     )
 
     trainer.train()
