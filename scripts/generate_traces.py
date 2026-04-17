@@ -2,11 +2,14 @@
 
 import argparse
 import json
+import random
+import traceback
 from pathlib import Path
 
+import numpy as np
 import torch
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
 DATA_DIR = Path("data/raw")
 
@@ -89,10 +92,21 @@ def make_bodhi_wrapper(model):
 
 
 def generate_response(model, messages, use_bodhi, bodhi_wrapper=None):
+    """Return {content, analysis, metadata}. analysis/metadata are None for
+    non-BODHI runs so callers get a stable schema.
+
+    Per Sebastian: saving analysis + metadata lets us audit *why* the model
+    decided what it did, not just what it said — critical for finding where
+    the humility wrapper went wrong on specific examples.
+    """
     if not use_bodhi:
-        return model.generate(messages)
+        return {"content": model.generate(messages), "analysis": None, "metadata": None}
     resp = bodhi_wrapper.complete(messages)
-    return resp.content
+    return {
+        "content": resp.content,
+        "analysis": resp.analysis,
+        "metadata": resp.metadata,
+    }
 
 
 def main():
@@ -105,7 +119,16 @@ def main():
     parser.add_argument("--use-bodhi", action="store_true")
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--resume-from", default=None)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    # Greedy decoding is deterministic without a seed, but the BODHI wrapper
+    # may use sampling internally (prompt shuffling, tie-breaking) — seed so
+    # reruns on identical hardware produce identical raw_traces.jsonl.
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    set_seed(args.seed)
 
     examples = load_multiple_datasets(args.datasets)
 
@@ -142,11 +165,13 @@ def main():
     with open(out_path, mode) as f:
         for ex in tqdm(examples):
             try:
-                resp = generate_response(model, ex["prompt"], args.use_bodhi, bodhi_wrapper)
+                out = generate_response(model, ex["prompt"], args.use_bodhi, bodhi_wrapper)
                 trace = {
                     "prompt_id": ex["prompt_id"],
                     "messages": ex["prompt"],
-                    "response": resp,
+                    "response": out["content"],
+                    "bodhi_analysis": out["analysis"],
+                    "bodhi_metadata": out["metadata"],
                     "tags": ex.get("example_tags", []),
                     "source_dataset": ex.get("_source", "unknown"),
                     "model": args.model,
@@ -156,6 +181,9 @@ def main():
                 f.flush()
                 ok += 1
             except Exception as e:
+                # Full traceback helps distinguish OOM from tokenizer/BODHI bugs
+                # when a 48h run has a few failures we want to diagnose later.
+                traceback.print_exc()
                 print(f"  Error on {ex['prompt_id']}: {e}")
                 fail += 1
 

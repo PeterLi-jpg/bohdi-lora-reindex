@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import random
 import urllib.request
 import sys
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 from peft import PeftModel
 
 # make sure we can import from scripts/
@@ -156,7 +157,15 @@ def main():
     parser.add_argument("--grader-model", default="Qwen/Qwen2.5-14B-Instruct-AWQ")
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-examples", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    # Eval uses greedy decoding so scores are deterministic given fixed inputs,
+    # but BODHI internals + grader may sample — seed for stability across reruns.
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    set_seed(args.seed)
 
     examples = load_eval_data(args.sample_ids)
     if args.max_examples:
